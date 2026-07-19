@@ -1,0 +1,50 @@
+title: AWS IAM Privilege Escalation via Self-Policy-Modification
+id: 8f3a1c2e-4a11-4d56-9abc-c1e4f5a2b001
+status: experimental
+description: |
+  Detects a principal (IAM role or user) modifying IAM policy attached to
+  itself -- e.g. attaching a broader managed policy, adding an inline policy,
+  or creating a new policy version. A common privilege-escalation technique
+  used after a low-privilege credential is compromised.
+references:
+  - https://attack.mitre.org/techniques/T1548/005/
+  - https://rhinosecuritylabs.com/aws/aws-privilege-escalation-methods-mitigation/
+author: <your name>
+date: 2026/07/19
+tags:
+  - attack.privilege_escalation
+  - attack.t1548.005
+logsource:
+  product: aws
+  service: cloudtrail
+detection:
+  selection_eventname:
+    eventName:
+      - PutRolePolicy
+      - AttachRolePolicy
+      - PutUserPolicy
+      - AttachUserPolicy
+      - PutGroupPolicy
+      - AttachGroupPolicy
+      - CreatePolicyVersion
+      - UpdateAssumeRolePolicy
+      - CreateAccessKey
+  selection_self_target:
+    # Target of the change matches the calling principal's own name.
+    # Implementation note: most SIEM backends need a correlation/enrichment
+    # step here (comparing two fields within the same event) rather than a
+    # static match -- see lambda/detector.py for the reference implementation,
+    # or use a lookup-list/eval in your SIEM (Splunk `eval`, Elastic
+    # `runtime field`, Sentinel KQL `extend`).
+    requestParameters.roleName|expand: '%userIdentity.sessionContext.sessionIssuer.userName%'
+  filter_known_automation:
+    userIdentity.arn|contains:
+      - 'role/break-glass-admin'
+      - 'role/terraform-ci'
+      - 'role/cdk-deploy-role'
+  condition: selection_eventname and selection_self_target and not filter_known_automation
+falsepositives:
+  - Legitimate IaC pipelines (Terraform, CDK, Pulumi) applying policy updates
+  - Break-glass admin roles used during incident response
+  - Onboarding automation that provisions new users' access keys
+level: high

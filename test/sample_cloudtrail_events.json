@@ -1,0 +1,78 @@
+{
+  "malicious_self_target": {
+    "detail": {
+      "eventVersion": "1.08",
+      "eventTime": "2026-07-19T14:32:07Z",
+      "eventName": "PutRolePolicy",
+      "eventSource": "iam.amazonaws.com",
+      "sourceIPAddress": "203.0.113.42",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "arn": "arn:aws:sts::123456789012:assumed-role/app-readonly-role/i-0abc123session",
+        "sessionContext": {
+          "sessionIssuer": {
+            "type": "Role",
+            "userName": "app-readonly-role",
+            "arn": "arn:aws:iam::123456789012:role/app-readonly-role"
+          }
+        }
+      },
+      "requestParameters": {
+        "roleName": "app-readonly-role",
+        "policyName": "SelfGrantedAdminAccess",
+        "policyDocument": "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Action\":\"*\",\"Resource\":\"*\"}]}"
+      }
+    }
+  },
+
+  "benign_different_target": {
+    "detail": {
+      "eventVersion": "1.08",
+      "eventTime": "2026-07-19T09:15:00Z",
+      "eventName": "AttachRolePolicy",
+      "eventSource": "iam.amazonaws.com",
+      "sourceIPAddress": "10.0.4.15",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "arn": "arn:aws:sts::123456789012:assumed-role/platform-admin/jdoe",
+        "sessionContext": {
+          "sessionIssuer": {
+            "type": "Role",
+            "userName": "platform-admin",
+            "arn": "arn:aws:iam::123456789012:role/platform-admin"
+          }
+        }
+      },
+      "requestParameters": {
+        "roleName": "app-readonly-role",
+        "policyArn": "arn:aws:iam::123456789012:policy/StandardReadOnly"
+      }
+    }
+  },
+
+  "benign_excluded_automation": {
+    "detail": {
+      "eventVersion": "1.08",
+      "eventTime": "2026-07-19T03:00:00Z",
+      "eventName": "PutRolePolicy",
+      "eventSource": "iam.amazonaws.com",
+      "sourceIPAddress": "10.0.1.9",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "arn": "arn:aws:sts::123456789012:assumed-role/terraform-ci/gha-run-4821",
+        "sessionContext": {
+          "sessionIssuer": {
+            "type": "Role",
+            "userName": "terraform-ci",
+            "arn": "arn:aws:iam::123456789012:role/terraform-ci"
+          }
+        }
+      },
+      "requestParameters": {
+        "roleName": "terraform-ci",
+        "policyName": "DeployPermissions",
+        "policyDocument": "{\"Version\":\"2012-10-17\",\"Statement\":[]}"
+      }
+    }
+  }
+}
