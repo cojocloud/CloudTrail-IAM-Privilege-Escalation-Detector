@@ -60,8 +60,7 @@ This walks through deploying and validating the whole pipeline from scratch, in 
 ### 1. Get the code
 
 ```bash
-unzip cloudtrail-privesc-detector.zip
-cd cloudtrail-privesc-detector
+cd terraform
 ```
 
 ### 2. Review what's about to be deployed
