@@ -45,37 +45,126 @@ Attackers who land a low-privilege credential frequently try to widen it before 
 - `UpdateAssumeRolePolicy` — widens who can assume a role
 - `CreateAccessKey` — new key for a user that already has an active one (backdoor credential)
 
-## Quick start
+## Step-by-step implementation guide
+
+This walks through deploying and validating the whole pipeline from scratch, in a personal/sandbox AWS account.
+
+### 0. Prerequisites
+
+- An AWS account you're comfortable creating IAM roles and a Lambda in (a personal sandbox account, not production)
+- AWS CLI installed and configured with credentials that can create IAM roles, Lambda functions, EventBridge rules, and SNS topics (effectively admin in the sandbox account)
+- [Terraform](https://developer.hashicorp.com/terraform/install) >= 1.5
+- Python 3.12 and `boto3` installed locally (`pip install boto3 --break-system-packages` or in a venv)
+- CloudTrail already enabled in the account/region, with management events. This project does **not** create the trail itself — check under CloudTrail → Trails in the console. Trails created after 2021 deliver to EventBridge by default; if yours is older, enable "Amazon EventBridge" delivery under the trail's settings.
+
+### 1. Get the code
 
 ```bash
-# 1. Deploy
+unzip cloudtrail-privesc-detector.zip
+cd cloudtrail-privesc-detector
+```
+
+### 2. Review what's about to be deployed
+
+Skim `terraform/main.tf` and `terraform/lambda.tf` before applying anything — you should always know what a Terraform module creates in your account. In short, this deploys:
+
+- One Lambda function (`iam-privesc-detector`)
+- One IAM role for that Lambda, scoped to CloudWatch Logs, publishing to one SNS topic, and attaching an inline policy *only* if it's named exactly `SecurityQuarantineDenyAll` (it cannot perform any other IAM write action)
+- One EventBridge rule matching the 9 monitored IAM event names
+- One SNS topic, plus an email subscription if you provide one
+
+### 3. Configure variables
+
+Copy the example and fill in your own values, or pass them as `-var` flags — both are shown below.
+
+```bash
 cd terraform
+cat > terraform.tfvars <<EOF
+aws_region              = "us-east-1"
+alert_email              = "you@example.com"
+auto_remediate           = "false"   # keep false until you've tuned exclusions - see step 8
+excluded_arn_substrings  = "break-glass-admin,terraform-ci,cdk-deploy-role"
+EOF
+```
+
+### 4. Deploy
+
+```bash
 terraform init
-terraform apply -var="alert_email=you@example.com" -var="auto_remediate=false"
+terraform plan     # read this output - confirm it matches step 2's expectations
+terraform apply
+```
 
-# 2. Unit-test the parsing logic offline (no AWS needed)
+Type `yes` to confirm. Terraform will print the Lambda name, function ARN, SNS topic ARN, and EventBridge rule name as outputs when it's done.
+
+### 5. Confirm the SNS subscription
+
+If you set `alert_email`, check your inbox for a "AWS Notification - Subscription Confirmation" email and click **Confirm subscription**. Alerts won't arrive until this is confirmed — this is an SNS requirement, not something Terraform can do for you.
+
+### 6. Run the offline unit tests
+
+These don't touch AWS at all — they replay fabricated CloudTrail events from `test/sample_cloudtrail_events.json` straight through `lambda/detector.py`'s logic, with `boto3` mocked out. Good for confirming the detection logic itself before you trust it against real infrastructure.
+
+```bash
 cd ../test
-python3 -m pytest simulate_attack.py --offline   # or: python3 detector_test.py
+python3 detector_test.py
+```
 
-# 3. Live-fire test in a sandbox AWS account (creates a throwaway low-priv role,
-#    assumes it, and calls PutRolePolicy on itself — exactly the attack pattern)
+You should see 4 tests pass: a malicious self-target gets flagged, a benign different-target call doesn't, an excluded automation principal is skipped, and (with auto-remediate on) the quarantine policy attaches to the right role.
+
+### 7. Run the live-fire simulation
+
+This is the real end-to-end check: it creates a throwaway low-privilege role in your sandbox account, assumes it, and has it call `PutRolePolicy` on itself — the exact attack pattern the pipeline is built to catch.
+
+```bash
 python3 simulate_attack.py --live
 ```
 
-You should see a CloudWatch Logs entry from the Lambda within a few seconds of the
-`simulate_attack.py --live` run, and (if `alert_email` was set) an email/SNS alert.
+Then check, in order:
 
-## Tuning for a real environment
+1. **CloudWatch Logs** → `/aws/lambda/iam-privesc-detector` → look for a log entry within ~10-30 seconds showing `"status": "suspicious"` for the `PutRolePolicy` call.
+2. **Your inbox** (if `alert_email` was set) → an email alert with the caller ARN, event name, and source IP.
+3. **IAM console** (if you set `auto_remediate = "true"`) → the sandbox role should now have an inline policy named `SecurityQuarantineDenyAll`.
 
-Before running this anywhere near production, you MUST tune the exclusion list in
-`lambda/detector.py` (`KNOWN_AUTOMATION_PRINCIPALS`). Every real AWS account has
-legitimate automation — Terraform CI roles, CDK deploy roles, AWS SSO/Control Tower
-service roles — that routinely touches IAM policies. Pull a week of real CloudTrail
-data and use it to build this list from evidence, not guesswork; the
-`athena/hunt_query.sql` query is a good starting point for that exercise.
+The script cleans up the sandbox role automatically after ~15 seconds unless you pass `--skip-cleanup`.
 
+### 8. Tune the exclusion list before trusting this anywhere real
 
-## Limitations / honest scope notes
+This is the step most POCs skip, and the one that matters most. Run the Athena hunt query against a real account's CloudTrail logs (or your sandbox's, after a few days of normal use):
+
+```bash
+# In Athena, against a Glue table over your CloudTrail S3 bucket:
+# paste the contents of athena/hunt_query.sql and run it
+```
+
+Look at which `caller_arn` values show up doing legitimate, repeated IAM changes — CI/CD deploy roles, IaC pipelines, SSO/Control Tower service roles — and add distinguishing substrings for them to `excluded_arn_substrings` in `terraform.tfvars`, then `terraform apply` again to pick up the change.
+
+### 9. (Optional) Turn on auto-remediation deliberately
+
+Once you trust the exclusion list, flip it on:
+
+```bash
+terraform apply -var="auto_remediate=true"
+```
+
+Re-run step 7 to confirm the quarantine actually attaches. Treat this as a reviewed decision each time you touch it, not a default — a false positive here can lock a real automation role out of IAM entirely.
+
+### 10. Tear down
+
+When you're done demoing this, remove everything it created:
+
+```bash
+cd terraform
+terraform destroy
+```
+
+## Resume framing (suggested bullet points)
+
+- *"Designed and deployed a serverless CloudTrail-based detection pipeline (EventBridge + Lambda) identifying IAM self-privilege-escalation attempts (MITRE T1548.005), with configurable auto-remediation via IAM deny-policy quarantine."*
+- *"Built a portable Sigma detection rule and Athena hunt query to support both real-time alerting and historical threat hunting across CloudTrail logs."*
+- *"Wrote an offensive test harness simulating the privilege-escalation attack path in a sandbox account to validate detection coverage end-to-end."*
+
+## Limitations / honest scope notes (worth saying in an interview)
 
 - This uses **CloudTrail management events**, which have ~a few minutes of delivery
   latency in the standard trail — for sub-second response you'd route through
