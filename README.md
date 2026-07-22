@@ -157,13 +157,7 @@ cd terraform
 terraform destroy
 ```
 
-## Resume framing (suggested bullet points)
-
-- *"Designed and deployed a serverless CloudTrail-based detection pipeline (EventBridge + Lambda) identifying IAM self-privilege-escalation attempts (MITRE T1548.005), with configurable auto-remediation via IAM deny-policy quarantine."*
-- *"Built a portable Sigma detection rule and Athena hunt query to support both real-time alerting and historical threat hunting across CloudTrail logs."*
-- *"Wrote an offensive test harness simulating the privilege-escalation attack path in a sandbox account to validate detection coverage end-to-end."*
-
-## Limitations / honest scope notes (worth saying in an interview)
+## Limitations / honest scope notes
 
 - This uses **CloudTrail management events**, which have ~a few minutes of delivery
   latency in the standard trail — for sub-second response you'd route through
