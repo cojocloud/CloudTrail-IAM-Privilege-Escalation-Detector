@@ -115,6 +115,12 @@ You should see 4 tests pass: a malicious self-target gets flagged, a benign diff
 
 This is the real end-to-end check: it creates a throwaway low-privilege role in your sandbox account, assumes it, and has it call `PutRolePolicy` on itself — the exact attack pattern the pipeline is built to catch.
 
+> Only have one IAM user in your sandbox account? That's fine — you don't
+> need a second one. See [`docs/live-fire-simulation.md`](docs/live-fire-simulation.md)
+> for exactly how the script uses your one user to create and assume a
+> throwaway role, so the "attacker" and "victim" in the simulation are never
+> your real credentials.
+
 ```bash
 python3 simulate_attack.py --live
 ```
