@@ -46,6 +46,7 @@ class DetectorTests(unittest.TestCase):
     def test_malicious_self_target_flagged(self):
         result = detector.handler(SAMPLE_EVENTS["malicious_self_target"], None)
         self.assertEqual(result["status"], "suspicious")
+        self.assertTrue(result["confirmed_self_target"])
         self.mock_sns.publish.assert_called_once()
 
     def test_benign_different_target_not_flagged(self):
@@ -57,6 +58,16 @@ class DetectorTests(unittest.TestCase):
         result = detector.handler(SAMPLE_EVENTS["benign_excluded_automation"], None)
         self.assertEqual(result["status"], "excluded")
         self.mock_sns.publish.assert_not_called()
+
+    def test_denied_self_target_still_flagged(self):
+        # Regression test: AWS nulls requestParameters on some denied calls
+        # (real example captured from a live sandbox run). The detector must
+        # not silently fall through to "benign" just because the target name
+        # couldn't be read off a blocked call.
+        result = detector.handler(SAMPLE_EVENTS["malicious_self_target_denied"], None)
+        self.assertEqual(result["status"], "suspicious")
+        self.assertFalse(result["confirmed_self_target"])
+        self.mock_sns.publish.assert_called_once()
 
     def test_auto_remediate_quarantines_role(self):
         detector.AUTO_REMEDIATE = True

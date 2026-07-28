@@ -172,6 +172,15 @@ terraform destroy
   role/user name). A production version should also flag cross-principal escalation
   (A grants B new permissions) — noted as a "next step" rather than implemented, to
   keep this POC focused and explainable.
+- **Denied calls can arrive with no target to compare.** AWS nulls out
+  `requestParameters` on some denied API calls — so a self-escalation attempt
+  that IAM successfully blocked can reach the Lambda with nothing to match
+  the caller's name against. `detector.py` treats this case
+  (`errorCode` present + empty `requestParameters`) as suspicious-but-unconfirmed
+  rather than silently falling through to "benign" — see `_is_self_target()`'s
+  `target_unknown` return value, and `test_denied_self_target_still_flagged`
+  in `test/detector_test.py` for the regression test (based on a real captured
+  event from `simulate_attack.py`).
 - Auto-remediation is off by default for a reason: a false positive that quarantines
   a CI/CD deploy role can break production deploys. Treat `auto_remediate=true` as an
   intentional, reviewed decision, not a default.

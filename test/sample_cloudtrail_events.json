@@ -74,5 +74,30 @@
         "policyDocument": "{\"Version\":\"2012-10-17\",\"Statement\":[]}"
       }
     }
+  },
+
+  "malicious_self_target_denied": {
+    "detail": {
+      "eventVersion": "1.11",
+      "eventTime": "2026-07-28T00:29:58Z",
+      "eventName": "PutRolePolicy",
+      "eventSource": "iam.amazonaws.com",
+      "sourceIPAddress": "73.147.135.151",
+      "userIdentity": {
+        "type": "AssumedRole",
+        "arn": "arn:aws:sts::123456789012:assumed-role/privesc-poc-sandbox-role/privesc-poc-demo-session",
+        "sessionContext": {
+          "sessionIssuer": {
+            "type": "Role",
+            "userName": "privesc-poc-sandbox-role",
+            "arn": "arn:aws:iam::123456789012:role/privesc-poc-sandbox-role"
+          }
+        }
+      },
+      "errorCode": "AccessDenied",
+      "errorMessage": "User: arn:aws:sts::123456789012:assumed-role/privesc-poc-sandbox-role/privesc-poc-demo-session is not authorized to perform: iam:PutRolePolicy on resource: role privesc-poc-sandbox-role because no identity-based policy allows the iam:PutRolePolicy action",
+      "requestParameters": null,
+      "responseElements": null
+    }
   }
 }

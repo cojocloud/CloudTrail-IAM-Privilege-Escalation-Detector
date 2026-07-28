@@ -179,3 +179,7 @@ temp/
 *.kubeconfig
 id_rsa
 id_rsa.pub
+############################################
+# Local virtualenv (test/ dependencies)
+############################################
+.venv/

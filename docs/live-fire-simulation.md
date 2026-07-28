@@ -23,11 +23,16 @@ only if they present a specific `ExternalId` (`privesc-poc-demo`) — this
 keeps it from being assumable by anything else in the account by accident.
 Sandbox-only pattern; never open a trust policy like this in production.
 
-### 2. Make it look low-privileged — `attach_baseline_readonly()`
+### 2. Make it look low-privileged (but over-permissioned) — `attach_baseline_permissions()`
 
-Attaches AWS's managed `ReadOnlyAccess` policy to the new role. This is the
-"before" state: a role that can look at things but shouldn't be able to
-touch IAM.
+Attaches AWS's managed `ReadOnlyAccess` policy, plus one narrow inline
+policy, `SelfManageInlinePolicies`, that allows `iam:PutRolePolicy` scoped
+*only* to the role's own ARN. This models a common real-world
+misconfiguration — an automation role granted "manage your own permissions"
+for flexibility — and it's a deliberate choice: with `ReadOnlyAccess` alone,
+step 3's escalation call gets denied by IAM before it can demonstrate
+anything (`ReadOnlyAccess` only grants `iam:Get*`/`List*`/`Generate*`/`Simulate*`,
+no `Put*`).
 
 ### 3. Assume it, then escalate — `assume_and_escalate()`
 
@@ -50,24 +55,27 @@ trip the detector itself — only the assumed role's action does.
 
 ### 4. Clean up — `cleanup()`
 
-Removes the inline policy (and the quarantine policy, if auto-remediation
-attached one), detaches `ReadOnlyAccess`, and deletes the role. Runs
-automatically ~15 seconds after step 3 unless you pass `--skip-cleanup`.
+Removes both inline policies (`SelfGrantedAdminAccess` and
+`SelfManageInlinePolicies`), the quarantine policy if auto-remediation
+attached one, detaches `ReadOnlyAccess`, and deletes the role. Runs
+automatically ~15 seconds after step 3, and now runs from a `finally` block
+in `main()` — so it fires even if step 3 raises (e.g. an unexpected
+`AccessDenied`), instead of leaving the role behind.
 
 ## Diagram
 
 ```
  Your one admin user
         │
-        │ iam:CreateRole, iam:AttachRolePolicy
+        │ iam:CreateRole, iam:AttachRolePolicy, iam:PutRolePolicy
         ▼
- privesc-poc-sandbox-role  (ReadOnlyAccess only — "low-privileged")
+ privesc-poc-sandbox-role  (ReadOnlyAccess + scoped self-manage grant)
         │
         │ sts:AssumeRole  (your admin user assumes it)
         ▼
  Temporary credentials, scoped to privesc-poc-sandbox-role
         │
-        │ iam:PutRolePolicy — target = itself
+        │ iam:PutRolePolicy — target = itself (allowed by SelfManageInlinePolicies)
         ▼
  CloudTrail event: caller == target  ───▶  EventBridge ───▶ Lambda (detector.py)
                                                                    │

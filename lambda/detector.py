@@ -93,10 +93,26 @@ def _is_excluded(caller_arn: str) -> bool:
     return any(substr in caller_arn for substr in EXCLUDED_ARN_SUBSTRINGS)
 
 
-def _is_self_target(event_name: str, detail: dict, caller_name: str | None) -> bool:
+def _is_self_target(
+    event_name: str, detail: dict, caller_name: str | None
+) -> tuple[bool, bool]:
+    """Returns (is_self_target, target_unknown).
+
+    AWS nulls out requestParameters on some denied calls (see errorCode
+    below) -- so a blocked self-escalation attempt can arrive with no target
+    name to compare against at all. target_unknown=True flags exactly that
+    case, so the caller can treat it as suspicious-but-unconfirmed instead of
+    silently falling through to "benign" just because the target couldn't be
+    read. Without this, the detector misses every self-escalation attempt
+    that IAM successfully blocked -- arguably the more common real-world case,
+    since attackers rarely have the right scope on the first try.
+    """
     if caller_name is None:
-        return False
-    request_params = detail.get("requestParameters") or {}
+        return False, False
+
+    raw_request_params = detail.get("requestParameters")
+    target_unknown = not raw_request_params and bool(detail.get("errorCode"))
+    request_params = raw_request_params or {}
     target_key = MONITORED_EVENTS.get(event_name)
 
     if event_name == "CreatePolicyVersion":
@@ -104,12 +120,12 @@ def _is_self_target(event_name: str, detail: dict, caller_name: str | None) -> b
         # own name appears in the policy ARN/name (heuristic -- refine with
         # real data, e.g. by resolving policy attachments).
         policy_arn = request_params.get("policyArn", "")
-        return caller_name in policy_arn
+        return caller_name in policy_arn, target_unknown
 
     if target_key is None:
-        return False
+        return False, target_unknown
     target_value = request_params.get(target_key, "")
-    return target_value == caller_name
+    return target_value == caller_name, target_unknown
 
 
 def _publish_alert(subject: str, message: str):
@@ -165,9 +181,9 @@ def handler(event, context):  # noqa: ARG001 - context required by Lambda signat
         return {"status": "excluded", "caller": caller_arn}
 
     caller_name = _caller_identity_name(detail)
-    self_target = _is_self_target(event_name, detail, caller_name)
+    self_target, target_unknown = _is_self_target(event_name, detail, caller_name)
 
-    if not self_target:
+    if not self_target and not target_unknown:
         logger.info(
             "Event %s by %s did not target caller's own identity; logging only.",
             event_name,
@@ -175,17 +191,33 @@ def handler(event, context):  # noqa: ARG001 - context required by Lambda signat
         )
         return {"status": "benign", "eventName": event_name, "caller": caller_arn}
 
-    # --- Suspicious: self-targeted IAM privilege modification ---
+    if target_unknown:
+        logger.warning(
+            "Event %s by %s was denied (errorCode=%s) before CloudTrail recorded "
+            "requestParameters -- target can't be confirmed, treating as suspicious.",
+            event_name,
+            caller_arn,
+            detail.get("errorCode"),
+        )
+
+    # --- Suspicious: self-targeted (or unconfirmed-target denied) IAM change ---
     timestamp = detail.get("eventTime", datetime.now(timezone.utc).isoformat())
     source_ip = detail.get("sourceIPAddress", "unknown")
 
+    header = (
+        "IAM PRIVILEGE ESCALATION ALERT"
+        if self_target
+        else "IAM PRIVILEGE ESCALATION ALERT (unconfirmed target - call was "
+        "denied before CloudTrail recorded parameters)"
+    )
     message_lines = [
-        "IAM PRIVILEGE ESCALATION ALERT",
+        header,
         f"Event:      {event_name}",
         f"Caller ARN: {caller_arn}",
         f"Time:       {timestamp}",
         f"Source IP:  {source_ip}",
-        f"Request:    {json.dumps(detail.get('requestParameters', {}))}",
+        f"Error:      {detail.get('errorCode', '(call succeeded)')}",
+        f"Request:    {json.dumps(detail.get('requestParameters') or {})}",
     ]
 
     remediated = False
@@ -213,4 +245,5 @@ def handler(event, context):  # noqa: ARG001 - context required by Lambda signat
         "eventName": event_name,
         "caller": caller_arn,
         "remediated": remediated,
+        "confirmed_self_target": self_target,
     }

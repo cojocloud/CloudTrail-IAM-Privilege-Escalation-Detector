@@ -41,6 +41,31 @@ ESCALATION_POLICY = {
 }
 
 
+def role_arn(account_id: str) -> str:
+    return f"arn:aws:iam::{account_id}:role/{ROLE_NAME}"
+
+
+def self_manage_policy(account_id: str) -> dict:
+    """
+    The over-permissioned grant this simulation is built around: a role
+    that's allowed to manage its OWN inline policies. This mirrors a common
+    real-world pattern (an automation/CI role scoped to "manage yourself" for
+    flexibility) and is what actually lets the self-escalation succeed --
+    without it, ReadOnlyAccess alone can't call PutRolePolicy at all, and the
+    simulation can't demonstrate the attack it's named for.
+    """
+    return {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Action": "iam:PutRolePolicy",
+                "Resource": role_arn(account_id),
+            }
+        ],
+    }
+
+
 def create_sandbox_role(iam):
     print(f"[1/4] Creating sandbox role '{ROLE_NAME}'...")
     try:
@@ -58,12 +83,19 @@ def create_sandbox_role(iam):
         raise
 
 
-def attach_baseline_readonly(iam):
+def attach_baseline_permissions(iam, account_id):
     print(
-        "[2/4] Attaching baseline read-only policy (simulating a low-priv identity)..."
+        "[2/4] Attaching baseline permissions (ReadOnlyAccess + a scoped "
+        "'manage my own inline policies' grant -- simulating an "
+        "over-permissioned automation role)..."
     )
     iam.attach_role_policy(
         RoleName=ROLE_NAME, PolicyArn="arn:aws:iam::aws:policy/ReadOnlyAccess",
+    )
+    iam.put_role_policy(
+        RoleName=ROLE_NAME,
+        PolicyName="SelfManageInlinePolicies",
+        PolicyDocument=json.dumps(self_manage_policy(account_id)),
     )
     # IAM changes can take a few seconds to propagate.
     time.sleep(8)
@@ -72,7 +104,7 @@ def attach_baseline_readonly(iam):
 def assume_and_escalate(sts, account_id):
     print("[3/4] Assuming the low-priv role, then calling PutRolePolicy on itself...")
     assumed = sts.assume_role(
-        RoleArn=f"arn:aws:iam::{account_id}:role/{ROLE_NAME}",
+        RoleArn=role_arn(account_id),
         RoleSessionName="privesc-poc-demo-session",
         ExternalId="privesc-poc-demo",
     )
@@ -83,7 +115,8 @@ def assume_and_escalate(sts, account_id):
         aws_secret_access_key=creds["SecretAccessKey"],
         aws_session_token=creds["SessionToken"],
     )
-    # THIS is the detected event: the assumed role grants itself admin.
+    # THIS is the detected event: the assumed role abuses the
+    # SelfManageInlinePolicies grant from step 2 to grant itself admin.
     scoped_iam.put_role_policy(
         RoleName=ROLE_NAME,
         PolicyName="SelfGrantedAdminAccess",
@@ -94,7 +127,11 @@ def assume_and_escalate(sts, account_id):
 
 def cleanup(iam):
     print("[4/4] Cleaning up sandbox role...")
-    for policy_name in ["SelfGrantedAdminAccess", "SecurityQuarantineDenyAll"]:
+    for policy_name in [
+        "SelfGrantedAdminAccess",
+        "SelfManageInlinePolicies",
+        "SecurityQuarantineDenyAll",
+    ]:
         try:
             iam.delete_role_policy(RoleName=ROLE_NAME, PolicyName=policy_name)
         except ClientError:
@@ -140,20 +177,25 @@ def main():
     )
     time.sleep(3)
 
-    create_sandbox_role(iam)
-    attach_baseline_readonly(iam)
-    assume_and_escalate(sts, account_id)
+    try:
+        create_sandbox_role(iam)
+        attach_baseline_permissions(iam, account_id)
+        assume_and_escalate(sts, account_id)
 
-    print(
-        "\nCheck CloudWatch Logs for the 'iam-privesc-detector' Lambda in the next ~30s."
-    )
-    print(
-        "Expect: status='suspicious', an SNS alert, and (if AUTO_REMEDIATE=true) a quarantine policy."
-    )
-
-    if not args.skip_cleanup:
-        time.sleep(15)  # give the detector time to run before we tear things down
-        cleanup(iam)
+        print(
+            "\nCheck CloudWatch Logs for the 'iam-privesc-detector' Lambda in the next ~30s."
+        )
+        print(
+            "Expect: status='suspicious', an SNS alert, and (if AUTO_REMEDIATE=true) a quarantine policy."
+        )
+    finally:
+        # Always attempt cleanup, even if something above raised -- otherwise
+        # a failed run leaves the sandbox role (and its permissions) behind.
+        if not args.skip_cleanup:
+            time.sleep(15)  # give the detector time to run before we tear things down
+            cleanup(iam)
+        else:
+            print("\n--skip-cleanup set: leaving the sandbox role in place.")
 
 
 if __name__ == "__main__":
