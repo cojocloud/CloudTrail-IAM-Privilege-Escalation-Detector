@@ -1,0 +1,6 @@
+                                                                                             
+  aws_region              = "us-east-1"                                                                                     
+  alert_email              = "yourEmail@email.com"                                                                              
+  auto_remediate           = "false"   # keep false until you've tuned exclusions - see step 8                              
+  excluded_arn_substrings  = ""                                               
+                                                                        
